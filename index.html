@@ -95,7 +95,7 @@
 <body>
 <div class="shell">
   <header class="topbar">
-    <div class="brand"><div class="logo" aria-hidden="true">M<span style="font-size:14px;margin-left:-2px">↗</span></div><div><div class="brandname">MIDNIGHT RUN</div><div class="brandsub">THE HIGHWAY CHALLENGE</div></div></div>
+    <div class="brand"><div class="logo" aria-hidden="true">M<span style="font-size:14px;margin-left:-2px">↗</span></div><div><div class="brandname">MIDNIGHT RUN</div><div class="brandsub">THE HILLSIDE HIGHWAY</div></div></div>
     <div class="topright"><div class="live-pill"><span class="dot"></span> OFFLINE ARCADE</div><div class="density-control"><label for="trafficDensity"><span>TRAFFIC DENSITY</span><output id="densityValue" for="trafficDensity">LIGHT</output></label><input id="trafficDensity" type="range" min="1" max="5" step="1" value="2" aria-label="Traffic density, 1 calm to 5 rush hour" title="Changes incoming traffic live"></div><button class="sound" id="soundButton" type="button" aria-label="Toggle game sound">♪ SOUND ON</button></div>
   </header>
   <main>
@@ -119,7 +119,7 @@
         <div class="overlay-card">
           <div class="eyebrow">THE 5 KM HIGHWAY CHALLENGE</div>
           <h1 class="hero">MIDNIGHT<br><span>RUN.</span></h1>
-          <p class="hero-sub">Read the gaps. Build your streak. Chain clean overtakes within six seconds for up to 5× points. Brake to find space, then push for the next pass. Reach 5 km with armor intact.</p>
+          <p class="hero-sub">Read the gaps. Build your streak. Chain clean overtakes within six seconds for up to 5× points. Brake to find space, then push for the next pass. Follow sweeping bends and rolling hills. Reach 5 km with armor intact.</p>
           <div class="overlay-keyrow"><span class="key">←</span><span class="key">→</span><span class="keylabel">STEER</span><span class="key">↑</span><span class="keylabel">GAS</span><span class="key">↓</span><span class="keylabel">BRAKE</span></div>
           <button class="action" type="button" data-start>START ENGINE <span aria-hidden="true">↗</span></button>
           <div class="shortcut">PRESS ENTER OR ANY ARROW KEY TO START</div>
@@ -137,7 +137,6 @@
   const ctx = canvas.getContext('2d');
   const W = canvas.width, H = canvas.height;
   const LANES = 5, PLAYER_Z = .765, FINISH_KM = 5;
-  const HORIZON_Y = 267; // Converge the roadway at the LAND horizon, not up in the sky.
   const DENSITY_NAMES = ['CALM','LIGHT','NORMAL','BUSY','RUSH HOUR'];
   const SPAWN_WINDOWS = [[1.3,1.85],[.94,1.43],[.78,1.20],[.67,1.02],[.54,.87]];
   const PLAN_DT = .15, PLAN_STEPS = 48, LANE_CHANGE_STEPS = 2;
@@ -155,15 +154,28 @@
   try { trafficDensity = clamp(Number(localStorage.getItem('midnight-run-density'))||2,1,5); } catch(e) {}
   ui.trafficDensity.value = String(trafficDensity);
   ui.densityValue.textContent = DENSITY_NAMES[trafficDensity-1];
-  // One depth scale keeps lane edges, road height and vehicle proportions consistent.
-  const depthScale = z => Math.pow(Math.max(0,z),1.7);
-  const roadY = z => HORIZON_Y + depthScale(z)*470;
-  const roadHalf = z => depthScale(z)*670;
-  const laneX = (lane,z) => W/2 + ((lane+.5)/LANES*2-1)*roadHalf(z);
-  const edgeX = (side,z) => W/2 + side*roadHalf(z);
-  const carW = z => 158*depthScale(z);
-  const carH = z => 98*depthScale(z);
-  const dust = Array.from({length:75},(_,i)=>({x:(i*97.37 % 100)/100,y:(i*39.47%100)/100,s:1+(i%3),a:0.1+(i%4)*.047}));
+  // World coordinates are meters. Project every object through the same camera.
+  const FOCAL=800, CAMERA_HEIGHT=3.5, PLAYER_DEPTH=12, DEPTH_RANGE=600;
+  const ROAD_HALF=7.5, SEGMENT=2, DRAW_DISTANCE=600;
+  const trackX = m => 65*Math.sin(m/155)+24*Math.sin(m/83);
+  const trackY = m => 7*Math.sin(m/105)+3*Math.sin(m/53);
+  const slope = (fn,m) => (fn(m+1)-fn(m-1))/2;
+  const worldDepth = z => PLAYER_DEPTH+(PLAYER_Z-z)*DEPTH_RANGE;
+  const depthScale = z => FOCAL/Math.max(2,worldDepth(z));
+  function project(d){
+    const m=state.distance*1000, scale=FOCAL/Math.max(2,d);
+    const heading=slope(trackX,m), pitch=slope(trackY,m+18);
+    const lateral=(state.visualLane-2)*3*.75;
+    return {x:W/2+scale*(trackX(m+d)-trackX(m)-heading*d-lateral),
+      y:340-scale*(trackY(m+d)-trackY(m)-CAMERA_HEIGHT-pitch*d),scale};
+  }
+  const roadY = z => project(worldDepth(z)).y;
+  const roadHalf = z => ROAD_HALF*depthScale(z);
+  const laneX = (lane,z) => project(worldDepth(z)).x+(lane-2)*3*depthScale(z);
+  const carW = z => 1.8*depthScale(z);
+  const carH = z => 1.12*depthScale(z);
+  const approachRate = (speed,otherSpeed) => (speed-otherSpeed)/3.6/DEPTH_RANGE;
+  let roadSlices=[];
   const stars = Array.from({length:55},(_,i)=>({x:(i*79.17%100)/100*W,y:(i*47.23%100)/100*162,r: i%4===0?1.35:.65}));
   const buildings = Array.from({length:48},(_,i)=>({x:i*26-10,w:17+(i*19%17),h:22+(i*29%73),lit:i%4===0}));
   const state = {
@@ -184,9 +196,10 @@
   function colorMix(hex,amount){let r=parseInt(hex.slice(1,3),16),g=parseInt(hex.slice(3,5),16),b=parseInt(hex.slice(5,7),16);let f=amount>=0?255:0,t=Math.abs(amount);return `rgb(${Math.round(lerp(r,f,t))},${Math.round(lerp(g,f,t))},${Math.round(lerp(b,f,t))})`;}
 
   function background(t){
+    ctx.save();ctx.translate(0,340+FOCAL*slope(trackY,state.distance*1000+18)-300);
     let sky=ctx.createLinearGradient(0,0,0,330);
     sky.addColorStop(0,'#0c172e');sky.addColorStop(.45,'#29375a');sky.addColorStop(.77,'#685574');sky.addColorStop(1,'#bd806e');
-    ctx.fillStyle=sky;ctx.fillRect(0,0,W,H);
+    ctx.fillStyle=sky;ctx.fillRect(0,-400,W,H+800);
     for(const p of stars){ctx.globalAlpha=.32+Math.sin(t*.9+p.x)*.17;ctx.fillStyle='#fff1db';ctx.beginPath();ctx.arc(p.x,p.y,p.r,0,Math.PI*2);ctx.fill();}ctx.globalAlpha=1;
     const glow=ctx.createRadialGradient(735,150,5,735,150,290);glow.addColorStop(0,'#ffc38e66');glow.addColorStop(.36,'#ec9b8550');glow.addColorStop(1,'#ef8a5e00');ctx.fillStyle=glow;ctx.fillRect(440,-100,600,490);
     ctx.fillStyle='#eab18f';ctx.beginPath();ctx.arc(738,169,47,Math.PI,2*Math.PI);ctx.fill();
@@ -194,70 +207,54 @@
     polygon([[0,242],[105,214],[171,239],[290,194],[382,251],[493,218],[601,238],[736,205],[850,242],[986,220],[1100,251],[1100,360],[0,360]],'#172940');
     for(const b of buildings){ctx.fillStyle=b.lit?'#26334b':'#1d3047';ctx.fillRect(b.x,235-b.h,b.w,b.h+65);if(b.lit){ctx.fillStyle='#ffc78f77';for(let q=0;q<3;q++){ctx.fillRect(b.x+5+(q%2)*8,244-b.h+Math.floor(q/2)*12,3,4);}}}
     let fog=ctx.createLinearGradient(0,165,0,310);fog.addColorStop(0,'#ce849422');fog.addColorStop(1,'#25365300');ctx.fillStyle=fog;ctx.fillRect(0,165,W,145);
+    ctx.restore();
   }
 
-  function roadway(t){
-    const scroll=state.scroll;
-    polygon([[W/2-24,HORIZON_Y],[W/2+24,HORIZON_Y],[edgeX(1,1)+65,roadY(1)],[edgeX(-1,1)-65,roadY(1)]],'#142131');
-    polygon([[edgeX(-1,0)-4,HORIZON_Y],[edgeX(-1,1)-39,roadY(1)],[edgeX(-1,1),roadY(1)],[edgeX(-1,0),HORIZON_Y]],'#8995ad');
-    polygon([[edgeX(1,0)+4,HORIZON_Y],[edgeX(1,1)+39,roadY(1)],[edgeX(1,1),roadY(1)],[edgeX(1,0),HORIZON_Y]],'#8995ad');
-    let road=ctx.createLinearGradient(0,HORIZON_Y,0,H);
-    road.addColorStop(0,'#253247');road.addColorStop(.45,'#1d2939');road.addColorStop(1,'#131c29');
-    polygon([[edgeX(-1,0),HORIZON_Y],[edgeX(1,0),HORIZON_Y],[edgeX(1,1),roadY(1)],[edgeX(-1,1),roadY(1)]],road);
-    // A dark translucent center strip creates depth without obscuring lane markers.
-    polygon([[W/2-1,HORIZON_Y],[W/2+1,HORIZON_Y],[W/2+115,H+50],[W/2-115,H+50]],'#0913210d');
-    for(let i=0;i<dust.length;i++){
-      const p=dust[i],z=(p.y+scroll*(.42+(i%5)*.08))%1;
-      const y=roadY(z),x=W/2+(p.x*1.94-.97)*roadHalf(z);
-      if(y<HORIZON_Y||y>H)continue;
-      line(x,y,x+(p.x-.5)*3,y+1+z*10,`rgba(204,225,242,${p.a*(.2+z)})`,p.s*z*.55+.3);
-    }
-    // Dashes are spaced in world depth so they appear to flow under the car.
-    for(let divider=1;divider<LANES;divider++){
-      for(let k=0;k<21;k++){
-        let z=(k/21+scroll*.44)%1;
-        let z2=Math.min(1,z+.016+z*.028);
-        const x1=W/2+(divider/LANES*2-1)*roadHalf(z),x2=W/2+(divider/LANES*2-1)*roadHalf(z2);
-        const w1=.55+z*2.4,w2=.55+z2*2.4;
-        polygon([[x1-w1,roadY(z)],[x1+w1,roadY(z)],[x2+w2,roadY(z2)],[x2-w2,roadY(z2)]],`rgba(219,232,243,${.25+z*.59})`);
+  function roadway(){
+    // Front-to-back visibility clips geometry behind hill crests.
+    roadSlices=[];
+    const position=state.distance*1000;
+    const groundHorizon=340+FOCAL*slope(trackY,position+18);
+    ctx.fillStyle='#526756';ctx.fillRect(0,groundHorizon,W,H-groundHorizon);
+    let clip=H;
+    for(let d=2;d<DRAW_DISTANCE;){
+      const end=Math.min(DRAW_DISTANCE,(Math.floor((position+d)/SEGMENT)+1)*SEGMENT-position);
+      if(end<=d){d+=.001;continue;}
+      const near=project(d),far=project(end),limit=clip;
+      roadSlices.push({near:d,far:end,clip:limit});
+      if(far.y<near.y && far.y<clip){
+        ctx.save();ctx.beginPath();ctx.rect(0,0,W,Math.ceil(clip));ctx.clip();
+        near.y=Math.ceil(near.y);far.y=Math.floor(far.y);
+        const band=Math.floor((position+d)/8)%2;
+        polygon([[0,near.y],[W,near.y],[W,far.y],[0,far.y]],band?'#44594c':'#4b6151');
+        const strip=(half,color)=>polygon([[near.x-near.scale*half,near.y],[near.x+near.scale*half,near.y],[far.x+far.scale*half,far.y],[far.x-far.scale*half,far.y]],color);
+        strip(ROAD_HALF+1.3,'#a89b85');
+        strip(ROAD_HALF+.28,band?'#f0dac0':'#b26455');
+        strip(ROAD_HALF,band?'#343b43':'#373e46');
+        if(Math.floor((position+d)/6)%2===0){
+          for(let lane=1;lane<LANES;lane++){
+            const x=-ROAD_HALF+lane*3,w=.045;
+            polygon([[near.x+(x-w)*near.scale,near.y],[near.x+(x+w)*near.scale,near.y],[far.x+(x+w)*far.scale,far.y],[far.x+(x-w)*far.scale,far.y]],'#e3ded0');
+          }
+        }
+        const haze=clamp((d-180)/350,0,1);
+        if(haze>0){ctx.fillStyle=`rgba(82,103,86,${haze})`;ctx.fillRect(0,far.y,W,near.y-far.y);}
+        ctx.restore();clip=Math.min(clip,far.y);
       }
+      d=end;
     }
-    // Edge rumble strips.
-    for(const side of [-1,1]){
-      for(let k=0;k<29;k++){
-        let z=(k/29+scroll*.48)%1,z2=Math.min(1,z+.012+z*.015);
-        let x1=edgeX(side,z),x2=edgeX(side,z2),wd1=2+z*9,wd2=2+z2*9;
-        polygon([[x1,roadY(z)],[x1+side*wd1,roadY(z)],[x2+side*wd2,roadY(z2)],[x2,roadY(z2)]],k%2?'#ff8269':'#dfdfcf');
-      }
-      let e=edgeX(side,0),f=edgeX(side,1);
-      line(e,HORIZON_Y,f,roadY(1),'#fbdfab88',2.3);
-    }
-    // Highway light poles sit outside the guardrails.
-    for(let k=0;k<12;k++){
-      const z=(k/12+scroll*.17)%1;
-      if(z<.025)continue;
-      const y=roadY(z),size=depthScale(z)*185;
+    // Meter-spaced delineators share the road camera and hill occlusion.
+    for(let m=Math.ceil((position+DRAW_DISTANCE)/24)*24;m>position+3;m-=24){
+      const d=m-position,p=project(d),slice=roadSlices.find(s=>d>=s.near&&d<=s.far);
+      if(!slice)continue;
+      ctx.save();ctx.beginPath();ctx.rect(0,0,W,slice.clip);ctx.clip();
       for(const side of [-1,1]){
-        const x=edgeX(side,z)+side*depthScale(z)*85;
-        line(x,y,x-side*(8+z*10),y-size,'#667a95',1.2+z*3.4);
-        line(x-side*(8+z*10),y-size,x-side*(23+z*30),y-size+2,'#8090a5',1+z*2.5);
-        ctx.save();ctx.shadowBlur=15+z*25;ctx.shadowColor='#ffbb85';
-        line(x-side*(20+z*29),y-size+2,x-side*(28+z*33),y-size+3,'#ffd6a1',2+z*4);
-        ctx.restore();
-        if(z>.45)line(x,y,x+side*(14+z*19),y+size*.2,'#132035',2);
+        const x=p.x+side*(ROAD_HALF+1)*p.scale;
+        ctx.fillStyle='#cad2c6';ctx.fillRect(x,p.y-1.05*p.scale,.09*p.scale,1.05*p.scale);
+        ctx.fillStyle='#ffa56d';ctx.fillRect(x,p.y-.93*p.scale,.10*p.scale,.22*p.scale);
       }
+      ctx.restore();
     }
-    // A roadside electronic road sign.
-    const signZ=.14 + ((scroll*.13+.43)%1)*.68;
-    if(signZ>.2&&signZ<.77){
-      const y=roadY(signZ),x=edgeX(1,signZ)+28+signZ*38,s=signZ*.95;
-      line(x,y,x,y-84*s,'#698299',3*s+1);
-      ctx.save();ctx.translate(x,y-99*s);ctx.scale(s,s);
-      roundPath(-18,-18,125,40,5);ctx.fillStyle='#101e26';ctx.fill();ctx.strokeStyle='#5b9388';ctx.lineWidth=2;ctx.stroke();
-      ctx.fillStyle='#89f4c5';ctx.font='bold 13px monospace';ctx.fillText('EXIT 05  →',-9,7);ctx.restore();
-    }
-    // Small median reflections help sell speed near the bottom of the viewport.
-    const grd=ctx.createLinearGradient(0,300,0,H);grd.addColorStop(0,'#c3deff00');grd.addColorStop(1,'#bbd1ff09');ctx.fillStyle=grd;ctx.fillRect(0,300,W,H-300);
   }
 
   function drawCar(x,y,z,color,style='sedan',isPlayer=false,tilt=0){
@@ -292,14 +289,14 @@
   // A step can keep a lane or begin a 0.3s lane change, during which BOTH lanes
   // must be clear. Each accepted vehicle must preserve a traversable route.
   function findSafeRoute(vehicles, assumedSpeed){
-    const velocity=vehicles.map(v=>clamp(.064+(assumedSpeed-v.speed)*.00105,.025,.265));
+    const velocity=vehicles.map(v=>approachRate(assumedSpeed,v.speed));
     function clear(lane,t){
       for(let i=0;i<vehicles.length;i++){
         if(vehicles[i].lane!==lane)continue;
         const z=vehicles[i].z+velocity[i]*t;
-        // More cautious than the actual collision zone; covers car length,
+        // Twelve meters of clearance on either side of the player covers car length,
         // the player's steering animation, and the finite planning timestep.
-        if(z>PLAYER_Z-.145&&z<PLAYER_Z+.145)return false;
+        if(z>PLAYER_Z-.020&&z<PLAYER_Z+.020)return false;
       }
       return true;
     }
@@ -334,11 +331,11 @@
   }
   function trafficIsSolvable(cars){
     // Test both cruising and full-throttle approach rates. Throttling/braking
-    // remains an extra option: none of the generated patterns requires a crash.
+    // remains an extra option; this bounded search is not a safety guarantee.
     return !!findSafeRoute(cars,Math.max(170,state.speed)) && !!findSafeRoute(cars,265);
   }
   function safeInsert(car){
-    if(state.traffic.some(v=>v.lane===car.lane&&Math.abs(v.z-car.z)<.21))return false;
+    if(state.traffic.some(v=>v.lane===car.lane&&Math.abs(v.z-car.z)<.045))return false;
     if(!trafficIsSolvable([...state.traffic,car]))return false;
     state.traffic.push(car);
     return true;
@@ -351,7 +348,7 @@
     let count=0;
     for(const lane of lanes){
       if(count>=target)break;
-      if(safeInsert(makeTrafficCar(lane,rand(.01,.045))))count++;
+      if(safeInsert(makeTrafficCar(lane,PLAYER_Z-rand(150,220)/DEPTH_RANGE)))count++;
     }
   }
   function resetRun(){
@@ -364,7 +361,7 @@
     for(let i=0;i<starterCount;i++){
       for(let attempt=0;attempt<12;attempt++){
         const lane=Math.floor(rand(0,LANES));
-        const z=.14+i*.095+rand(-.02,.02);
+        const z=PLAYER_Z-(85+i*35)/DEPTH_RANGE;
         if(safeInsert(makeTrafficCar(lane,z)))break;
       }
     }
@@ -477,28 +474,27 @@
     const px=laneX(state.visualLane,PLAYER_Z);
     for(let i=state.traffic.length-1;i>=0;i--){
       const car=state.traffic[i];
-      car.z+=dt*clamp(.064+(state.speed-car.speed)*.00105,.025,.265);
-      const cx=laneX(car.lane,car.z);
-      if(!car.passed&&car.z>PLAYER_Z+.105){
+      car.z+=dt*approachRate(state.speed,car.speed);
+      if(!car.passed&&car.z>PLAYER_Z+.012){
         car.passed=true;
         if(!car.close){
           state.passed++;state.combo=Math.min(5,state.combo+1);state.comboTime=6;
-          const near=Math.abs(state.visualLane-car.lane)<1.3&&Math.abs(px-cx)>carW(PLAYER_Z)*.90;
+          const near=Math.abs(state.visualLane-car.lane)<1.3&&Math.abs(state.visualLane-car.lane)>.66;
           const points=Math.round((125+state.speed*.24+(near?95:0))*state.combo);
           state.score+=points;
           showToast((near?'CLOSE CALL':'CLEAN PASS')+' +'+points+' · ×'+state.combo);
           beep(440+state.combo*80,.08,'triangle',.02);
         }
       }
-      if(!car.close&&state.invuln<=0&&car.z>PLAYER_Z-.07&&car.z<PLAYER_Z+.075){
-        const width=(carW(car.z)*(car.style==='truck'?1.14:1)+carW(PLAYER_Z))*.42;
-        if(Math.abs(cx-px)<width){
+      if(!car.close&&state.invuln<=0&&car.z>PLAYER_Z-.007&&car.z<PLAYER_Z+.007){
+        const width=(1.8*(car.style==='truck'?1.14:car.style==='suv'?1.07:1)+1.8)*.42;
+        if(Math.abs(state.visualLane-car.lane)*3<width){
           car.close=true;state.combo=0;state.comboTime=0;state.armor--;state.invuln=1.7;state.flash=.9;state.shake=9;state.speed=Math.max(70,state.speed-70);state.score=Math.max(0,state.score-340);
           emitSparks(px,roadY(PLAYER_Z)-12);showToast('COLLISION!');beep(88,.38,'sawtooth',.075);
           if(state.armor<=0){finish(false);break;}
         }
       }
-      if(car.z>1.12)state.traffic.splice(i,1);
+      if(worldDepth(car.z)<2||worldDepth(car.z)>DRAW_DISTANCE)state.traffic.splice(i,1);
     }
     if(state.distance>=FINISH_KM){state.distance=FINISH_KM;state.score+=1250+state.armor*500;finish(true);}
     updateHUD();soundTick();
@@ -519,13 +515,15 @@
     ctx.save();
     if(state.shake>0)ctx.translate(rand(-state.shake,state.shake),rand(-state.shake*.55,state.shake*.55));
     background(state.time);roadway(state.time);
-    const cars=state.mode==='ready'?[{lane:1,z:.37,speed:115,color:palette[0],style:'sedan'},{lane:3,z:.58,speed:125,color:palette[2],style:'suv'},{lane:4,z:.28,speed:100,color:palette[4],style:'truck'},{lane:0,z:.64,speed:124,color:palette[1],style:'sedan'}]:state.traffic;
+    const cars=state.traffic;
     // Draw all cars, including the player, in road-depth order for correct overlap.
     const scene=cars.map(car=>({...car,isPlayer:false}));
     if(state.mode!=='lost'||state.armor>0)scene.push({lane:state.visualLane,z:PLAYER_Z,color:'#40c7e7',style:'sedan',isPlayer:true});
     for(const car of scene.sort((a,b)=>a.z-b.z)){
-      const y=roadY(car.z);if(y>H+180)continue;
+      const d=worldDepth(car.z),y=roadY(car.z);if(d<2||y>H+180)continue;
       ctx.save();
+      const slice=roadSlices.find(s=>d>=s.near&&d<=s.far);
+      if(!car.isPlayer&&slice){ctx.beginPath();ctx.rect(0,0,W,slice.clip);ctx.clip();}
       if(car.isPlayer&&state.invuln>0&&Math.floor(state.time*11)%2===0)ctx.globalAlpha=.48;
       drawCar(laneX(car.lane,car.z),y,car.z,car.color,car.style,car.isPlayer,car.isPlayer?clamp((state.lane-state.visualLane)*.14,-.12,.12):0);
       ctx.restore();
